@@ -7,13 +7,12 @@
 #
 # -*- coding: utf-8 -*-
 """
-Головний файл бота "Privacy Sentry" (v4.5 - Stable Release)
+Головний файл бота "Privacy Sentry" (v4.8 - Bugfix Release)
 
-Виправлення v4.5:
-- CRITICAL FIX: Виправлено `KeyError: 'summary_text'`. Тепер `get_checklist_template_data`
-  правильно викликає генератор історії.
-- UX: Уніфіковано нумерацію кроків у Чек-лісті (Крок X/10).
-- UX: Перевірено логіку видалення повідомлень переходу (Upsell).
+Виправлення v4.8:
+- CRITICAL FIX: `KeyError: 'status'`. Додано передачу статусу в шаблони нотаток Чек-ліста.
+- STABILITY: Перевірено генерацію `summary_text`.
+- UX: Уніфіковано видалення повідомлень при переходах (Upsell).
 """
 
 import logging
@@ -36,7 +35,6 @@ from telegram.error import BadRequest
 
 # Локальні імпорти
 import templates
-# Ми припускаємо, що pdf_utils.py працює коректно (v3.2 від товариша або v4.2 наш)
 from pdf_utils import create_pdf_from_markdown, clear_temp_file
 
 # Налаштування логування
@@ -324,6 +322,7 @@ async def cancel_from_block(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         pass
     return await cancel(update, context)
 
+
 # === 4. POLICY ===
 
 def get_policy_template_data(data: dict) -> dict:
@@ -347,7 +346,6 @@ async def start_policy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def start_policy_from_upsell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    # Тут важливо: видаляємо повідомлення з кнопкою Upsell
     await delete_main_message(context, query.message.message_id)
     return await start_policy(update, context)
 
@@ -428,6 +426,7 @@ async def policy_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def get_dpia_template_data(data: dict) -> dict:
     minimization_text = ""
     minimization_data = data.get('minimization_data', [])
+    
     if data.get('data_list') and not minimization_data:
         for i, item in enumerate(data.get('data_list', [])):
              minimization_text += f"\n<b>{i+1}. {safe_user_input(item)}:</b> [Очікує...] "
@@ -514,6 +513,7 @@ async def dpia_ask_minimization_status(context: ContextTypes.DEFAULT_TYPE) -> in
     
     keyboard = [[InlineKeyboardButton("✅ Так", callback_data="min_yes"), InlineKeyboardButton("❌ Ні", callback_data="min_no")]]
     template_data = get_dpia_template_data(context.user_data['dpia'])
+    
     safe_item = f"<code>{safe_user_input(current_data_item)}</code>"
     
     text = templates.DPIA_Q_MINIMIZATION_ASK.format(
@@ -654,7 +654,7 @@ async def dpia_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         except: pass
         return ConversationHandler.END
 
-# === 6. Checklist (v4.5 - FIXED) ===
+# === 6. Checklist (v4.8 - FIXED) ===
 
 def get_status_text_html(status: str) -> str:
     if status == "yes": return "✅ <b>Виконано</b>"
@@ -666,7 +666,6 @@ def get_note_text_html(note: str) -> str:
     if note == "*Пропущено*": return "Нотатка: <i>Пропущено</i>"
     return f"Нотатка: <code>{safe_user_input(note)}</code>"
 
-# (v4.5 FIX) Ця функція тепер використовується у get_checklist_template_data
 def get_checklist_summary_text(cl_data: dict) -> str:
     summary = f"✅ <b>Назва Проєкту:</b> <code>{safe_user_input(cl_data.get('project_name', '...'))}</code>\n\n"
     
@@ -706,7 +705,6 @@ def get_checklist_summary_text(cl_data: dict) -> str:
     return summary.strip()
 
 def get_checklist_template_data(cl_data: dict) -> dict:
-    # (v4.5 FIX) Тепер повертає ПОВНИЙ набір даних, включаючи summary_text
     return {
         'project_name': safe_user_input(cl_data.get('project_name', '...')),
         'summary_text': get_checklist_summary_text(cl_data),
@@ -774,9 +772,13 @@ async def checklist_q_project_name(update: Update, context: ContextTypes.DEFAULT
 async def _handle_status(update, context, status_key, next_tmpl, next_state):
     query = update.callback_query
     await query.answer()
-    context.user_data['cl'][status_key] = "yes" if query.data == "cl_yes" else "no"
+    status_val = "yes" if query.data == "cl_yes" else "no"
+    context.user_data['cl'][status_key] = status_val
     
     td = get_checklist_template_data(context.user_data['cl'])
+    # (v4.8 FIX) Explicitly add 'status' to template data
+    td['status'] = get_status_text_html(status_val)
+    
     text = next_tmpl.format(**td)
     await edit_main_message(context, text, get_skip_note_keyboard())
     context.user_data['current_state'] = next_state
@@ -920,6 +922,7 @@ async def checklist_generate(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pdf_path = create_pdf_from_markdown(filled_md, False, f"checklist_{user_id}.pdf")
         await context.bot.send_document(chat_id=chat_id, document=open(pdf_path, 'rb'))
         
+        # Success Message + Button
         upsell_msg = await context.bot.send_message(
             chat_id=chat_id,
             text=templates.POST_CHECKLIST_SUCCESS,
